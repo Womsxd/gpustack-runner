@@ -104,12 +104,12 @@ on:
         default: false
 
 env:
-  INPUT_USERNAME: Womsxd
+  INPUT_USERNAME: womsxd
   INPUT_PASSWORD: ${{ secrets.GITHUB_TOKEN }}
   INPUT_NAMESPACE: gpustack
   INPUT_REPOSITORY: runner
   INPUT_CACHE_REPOSITORY: runner-build-cache
-  OUT_NAMESPACE: Womsxd
+  OUT_NAMESPACE: womsxd
   OUT_REPOSITORY: gpustack-runner
   OUT_CACHE_REPOSITORY: gpustack-runner-build-cache
 
