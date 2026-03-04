@@ -81,24 +81,15 @@ rules:
   ## NVIDIA CUDA 12.9.1
   ##
   - backend: "cuda"
+    platforms:
+      - "linux/amd64"
     services:
       - "vllm"
       - "sglang"
     args:
       - "CUDA_VERSION=12.9.1"
-      - "SGLANG_BASE_IMAGE=gpustack/runner:cuda12.9-vllm0.15.1"
-      - "SGLANG_BUILD_BASE_IMAGE=gpustack/runner:cuda12.9-vllm0.15.1"
-  ## NVIDIA CUDA 12.8.1
-  ##
-  - backend: "cuda"
-    services:
-      - "voxbox"
-      - "vllm"
-      - "sglang"
-    args:
-      - "CUDA_VERSION=12.8.1"
-      - "SGLANG_BASE_IMAGE=gpustack/runner:cuda12.8-vllm0.15.1"
-      - "SGLANG_BUILD_BASE_IMAGE=gpustack/runner:cuda12.8-vllm0.15.1"
+      - "SGLANG_BASE_IMAGE=womsxd/gpustack-runner:cuda12.9-vllm0.15.1"
+      - "SGLANG_BUILD_BASE_IMAGE=womsxd/gpustack-runner:cuda12.9-vllm0.15.1"
 
   #
   # Hygon DTK
