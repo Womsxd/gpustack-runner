@@ -88,8 +88,8 @@ rules:
       - "sglang"
     args:
       - "CUDA_VERSION=12.9.1"
-      - "SGLANG_BASE_IMAGE=womsxd/gpustack-runner:cuda12.9-vllm0.15.1"
-      - "SGLANG_BUILD_BASE_IMAGE=womsxd/gpustack-runner:cuda12.9-vllm0.15.1"
+      - "SGLANG_BASE_IMAGE=ghcr.io/womsxd/gpustack-runner:cuda12.9-vllm0.16.0"
+      - "SGLANG_BUILD_BASE_IMAGE=ghcr.io/womsxd/gpustack-runner:cuda12.9-vllm0.16.0"
 
   #
   # Hygon DTK
