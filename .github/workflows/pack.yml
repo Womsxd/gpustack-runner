@@ -10,6 +10,7 @@ permissions:
   actions: write
   contents: write
   pull-requests: write
+  packages: write
 
 defaults:
   run:
@@ -105,9 +106,12 @@ on:
 env:
   INPUT_USERNAME: Womsxd
   INPUT_PASSWORD: ${{ secrets.GITHUB_TOKEN }}
-  INPUT_NAMESPACE: Womsxd
-  INPUT_REPOSITORY: gpustack-runner
+  INPUT_NAMESPACE: gpustack
+  INPUT_REPOSITORY: runner
   INPUT_CACHE_REPOSITORY: runner-build-cache
+  OUT_NAMESPACE: Womsxd
+  OUT_REPOSITORY: gpustack-runner
+  OUT_CACHE_REPOSITORY: gpustack-runner-build-cache
 
 jobs:
   # Expand the matrix based on the input parameters.
@@ -193,7 +197,7 @@ jobs:
 
           # Export tags to GH output.
           echo "tags<<EOF" >> $GITHUB_OUTPUT
-          echo "${INPUT_NAMESPACE}/${INPUT_REPOSITORY}:${INPUT_PLATFORM_TAG}" >> $GITHUB_OUTPUT
+          echo "ghcr.io/${OUT_NAMESPACE}/${OUT_REPOSITORY}:${INPUT_PLATFORM_TAG}" >> $GITHUB_OUTPUT
           echo "EOF" >> $GITHUB_OUTPUT
 
           # Export build_args to GH output.
@@ -216,7 +220,7 @@ jobs:
           echo "cache_to<<EOF" >> $GITHUB_OUTPUT
           if [[ -z "${INPUT_POST_OPERATION}" ]]; then
             for tag_cache in ${INPUT_PLATFORM_TAG_CACHE}; do
-              echo "type=registry,ignore-error=true,mode=max,compression=gzip,ref=${INPUT_NAMESPACE}/${INPUT_CACHE_REPOSITORY}:${tag_cache}" >> $GITHUB_OUTPUT
+              echo "type=registry,ignore-error=true,mode=max,compression=gzip,ref=ghcr.io/${OUT_NAMESPACE}/${OUT_CACHE_REPOSITORY}:${tag_cache}" >> $GITHUB_OUTPUT
             done
           fi
           echo "EOF" >> $GITHUB_OUTPUT
@@ -273,13 +277,13 @@ jobs:
           for TAG in $(echo "${INPUT_MANIFEST_JOBS}" | jq -r 'keys[]'); do
               PLATFORM_TAGS="$(echo "${INPUT_MANIFEST_JOBS}" | jq -r \
                 --arg tag "${TAG}" \
-                --arg repo "${INPUT_NAMESPACE}/${INPUT_REPOSITORY}" \
+                --arg repo "ghcr.io/${OUT_NAMESPACE}/${OUT_REPOSITORY}" \
                 '.[$tag] | map($repo + ":" + .) | join(" ")')"
-              echo "[INFO]: Creating manifest '${INPUT_NAMESPACE}/${INPUT_REPOSITORY}:${TAG}' with '${PLATFORM_TAGS}'"
-              docker manifest create --amend "${INPUT_NAMESPACE}/${INPUT_REPOSITORY}:${TAG}" ${PLATFORM_TAGS}
-              docker manifest inspect "${INPUT_NAMESPACE}/${INPUT_REPOSITORY}:${TAG}"
-              echo "[INFO]: Pushing manifest '${INPUT_NAMESPACE}/${INPUT_REPOSITORY}:${TAG}'"
-              docker manifest push --purge "${INPUT_NAMESPACE}/${INPUT_REPOSITORY}:${TAG}"
+              echo "[INFO]: Creating manifest 'ghcr.io/${OUT_NAMESPACE}/${OUT_REPOSITORY}:${TAG}' with '${PLATFORM_TAGS}'"
+              docker manifest create --amend "ghcr.io/${OUT_NAMESPACE}/${OUT_REPOSITORY}:${TAG}" ${PLATFORM_TAGS}
+              docker manifest inspect "ghcr.io/${OUT_NAMESPACE}/${OUT_REPOSITORY}:${TAG}"
+              echo "[INFO]: Pushing manifest 'ghcr.io/${OUT_NAMESPACE}/${OUT_REPOSITORY}:${TAG}'"
+              docker manifest push --purge "ghcr.io/${OUT_NAMESPACE}/${OUT_REPOSITORY}:${TAG}"
           done
 
   # Submit a PR to merge the runner.
