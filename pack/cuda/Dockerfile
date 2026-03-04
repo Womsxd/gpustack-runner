@@ -1345,6 +1345,8 @@ RUN --mount=type=bind,from=vllm-build-vllm,source=/,target=/vllm,rw <<EOF
     uv pip install \
         /vllm/workspace/*.whl
 
+    uv pip install transformers==5.2.0
+
     # Cleanup
     rm -rf /var/tmp/* \
         && rm -rf /tmp/*
@@ -1804,6 +1806,7 @@ RUN --mount=type=bind,from=sglang-build-sglang,source=/,target=/sglang,rw \
         "$(ls /sglang/workspace/sgl_kernel-*.whl)"
     uv pip install --force-reinstall \
         /sglangrouter/workspace/*.whl
+    uv pip install transformers==5.2.0
 
     # Uninstall
     ## Remove Run:AI Model Streamer to avoid peak memory usage in model loading.
