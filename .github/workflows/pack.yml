@@ -103,10 +103,10 @@ on:
         default: false
 
 env:
-  INPUT_USERNAME: gpustack
-  INPUT_PASSWORD: ${{ secrets.CI_DOCKERHUB_PASSWORD }}
-  INPUT_NAMESPACE: gpustack
-  INPUT_REPOSITORY: runner
+  INPUT_USERNAME: Womsxd
+  INPUT_PASSWORD: ${{ secrets.GITHUB_TOKEN }}
+  INPUT_NAMESPACE: Womsxd
+  INPUT_REPOSITORY: gpustack-runner
   INPUT_CACHE_REPOSITORY: runner-build-cache
 
 jobs:
@@ -257,6 +257,7 @@ jobs:
       - name: Login DockerHub
         uses: docker/login-action@v3
         with:
+          registry: ghcr.io
           username: ${{ env.INPUT_USERNAME }}
           password: ${{ env.INPUT_PASSWORD }}
       - name: Manifest
