@@ -1,0 +1,468 @@
+ARG PYTHON_VERSION=3.11
+ARG CMAKE_MAX_JOBS
+ARG CANN_VERSION=9.0.0
+ARG CANN_ARCHS=910b
+ARG CANN_BASE_IMAGE=quay.io/ascend/vllm-ascend:v0.20.2rc1
+ARG VLLM_VERSION=0.20.2
+ARG VLLM_TORCH_VERSION=2.10.0
+ARG VLLM_LMCACHE_VERSION=0.4.3
+ARG VLLM_LMCACHE_ASCEND_VERSION=${VLLM_LMCACHE_VERSION}
+ARG VLLM_MOONCAKE_VERSION=0.3.11
+ARG VLLM_OMNI_COMMIT=4a24a517
+
+FROM ${CANN_BASE_IMAGE} AS vllm-build
+SHELL ["/bin/bash", "-eo", "pipefail", "-c"]
+
+ARG TARGETPLATFORM
+ARG TARGETOS
+ARG TARGETARCH
+
+## Install Tools
+
+ENV DEBIAN_FRONTEND=noninteractive \
+    LANG='en_US.UTF-8' \
+    LANGUAGE='en_US:en' \
+    LC_ALL='en_US.UTF-8'
+
+RUN <<EOF
+    # Tools
+
+    # Refresh
+    apt-get update -y && apt-get install -y --no-install-recommends \
+        software-properties-common apt-transport-https \
+        ca-certificates gnupg2 lsb-release gnupg-agent \
+      && apt-get update -y
+
+    # Install
+    apt-get install -y --no-install-recommends \
+        ca-certificates build-essential binutils bash openssl \
+        curl wget aria2 \
+        git git-lfs \
+        unzip xz-utils \
+        tzdata locales \
+        iproute2 iputils-ping ifstat net-tools dnsutils pciutils ipmitool \
+        rdma-core rdmacm-utils infiniband-diags \
+        procps sysstat htop \
+        tini vim jq bc tree
+
+    # Update locale
+    localedef -i en_US -c -f UTF-8 -A /usr/share/locale/locale.alias en_US.UTF-8
+
+    # Update timezone
+    rm -f /etc/localtime \
+        && ln -sf /usr/share/zoneinfo/Asia/Shanghai /etc/localtime \
+        && echo "Asia/Shanghai" > /etc/timezone \
+        && dpkg-reconfigure --frontend noninteractive tzdata
+
+    # Cleanup
+    rm -rf /var/tmp/* \
+        && rm -rf /tmp/* \
+        && rm -rf /var/cache/apt
+EOF
+
+## Prepare C Buildkit
+
+RUN <<EOF
+    # C Buildkit
+
+    apt-get install -y --no-install-recommends \
+        ffmpeg libjpeg-dev libpng-dev libtiff-dev libwebp-dev \
+        numactl libnuma-dev libjemalloc2 \
+        cmake make ninja-build pkg-config ccache
+
+    # Cleanup
+    rm -rf /var/tmp/* \
+        && rm -rf /tmp/* \
+        && rm -rf /var/cache/apt
+EOF
+
+## Prepare Python
+
+ARG PYTHON_VERSION
+
+ENV PYTHON_VERSION=${PYTHON_VERSION}
+
+RUN <<EOF
+    # Python
+
+    # Update alternatives
+    if ! command -v python >/dev/null 2>&1 \
+        && command -v python${PYTHON_VERSION} >/dev/null 2>&1; then
+        update-alternatives --install /usr/bin/python python $(which python${PYTHON_VERSION}) 1
+    fi
+
+EOF
+
+ENV PIP_NO_CACHE_DIR=1 \
+    PIP_DISABLE_PIP_VERSION_CHECK=1 \
+    PIP_ROOT_USER_ACTION=ignore
+
+## Prepare Python Buildkit
+
+RUN <<EOF
+    # Buildkit
+
+    cat <<EOT >/tmp/requirements.txt
+build
+uv
+EOT
+    pip install -r /tmp/requirements.txt
+
+    # Cleanup
+    rm -rf /var/tmp/* \
+        && rm -rf /tmp/*
+EOF
+
+## Prepare Envs
+
+ARG CANN_VERSION
+ARG CANN_ARCHS
+
+ENV CANN_HOME="/usr/local/Ascend" \
+    CANN_VERSION=${CANN_VERSION} \
+    CANN_ARCHS=${CANN_ARCHS}
+
+ENV UV_SYSTEM_PYTHON=1 \
+    UV_PRERELEASE=allow \
+    UV_SKIP_WHEEL_FILENAME_CHECK=1 \
+    UV_NO_CACHE=1 \
+    UV_HTTP_TIMEOUT=500 \
+    UV_INDEX_STRATEGY="unsafe-best-match"
+
+ARG VLLM_VERSION
+ARG VLLM_TORCH_VERSION
+
+ENV VLLM_VERSION=${VLLM_VERSION} \
+    VLLM_TORCH_VERSION=${VLLM_TORCH_VERSION}
+
+
+FROM vllm-build AS vllm-build-mooncake
+SHELL ["/bin/bash", "-eo", "pipefail", "-c"]
+
+ARG TARGETPLATFORM
+ARG TARGETOS
+ARG TARGETARCH
+
+## Build MoonCake
+
+ARG CMAKE_MAX_JOBS
+ARG VLLM_MOONCAKE_VERSION
+
+ENV PATH="/usr/local/go/bin:${PATH}"
+
+RUN <<EOF
+    # MoonCake
+
+    rm -rf /workspace
+
+    if [[ "${CANN_ARCHS}" == "310p" ]]; then
+        echo "Skipping MoonCake build for ${CANN_ARCHS}..."
+        exit 0
+    fi
+
+    # Build MoonCake
+    CMAKE_MAX_JOBS="${CMAKE_MAX_JOBS}"
+    if [[ -z "${CMAKE_MAX_JOBS}" ]]; then
+        CMAKE_MAX_JOBS="$(( $(nproc) / 2 ))"
+    fi
+    if (( $(echo "${CMAKE_MAX_JOBS} < 4" | bc -l) )); then
+        CMAKE_MAX_JOBS="4"
+    fi
+    export MAX_JOBS="${CMAKE_MAX_JOBS}"
+    export LD_LIBRARY_PATH="${LD_LIBRARY_PATH}:${CANN_HOME}/ascend-toolkit/latest/$(uname -i)-linux/lib64"
+    echo "Building MoonCake with the following environment variables:"
+    env
+
+    git -C /tmp clone --recursive --shallow-submodules \
+        --depth 1 --branch v${VLLM_MOONCAKE_VERSION} --single-branch \
+        https://github.com/kvcache-ai/Mooncake.git mooncake
+    pushd /tmp/mooncake \
+        && bash dependencies.sh -y \
+        && cmake -S . -B build -DBUILD_UNIT_TESTS=OFF -DUSE_ASCEND_DIRECT=ON -DUSE_HTTP=ON -DUSE_ETCD=ON -DSTORE_USE_ETCD=ON -DCMAKE_BUILD_TYPE=Release \
+        && cmake --build build --target install -j${MAX_JOBS} \
+        && ./scripts/build_wheel.sh \
+        && tree -hs /tmp/mooncake/mooncake-wheel/dist/ \
+        && mv /tmp/mooncake/mooncake-wheel/dist/ /workspace
+
+    # Cleanup
+    rm -rf /var/tmp/* \
+        && rm -rf /tmp/* \
+        && ccache --clear --clean
+EOF
+
+
+FROM vllm-build AS vllm-build-omni
+SHELL ["/bin/bash", "-eo", "pipefail", "-c"]
+
+ARG TARGETPLATFORM
+ARG TARGETOS
+ARG TARGETARCH
+
+## Build Omni
+
+ARG CMAKE_MAX_JOBS
+ARG VLLM_OMNI_COMMIT
+
+RUN <<EOF
+    # Omni
+
+    rm -rf /workspace
+
+    if [[ -z "${VLLM_OMNI_COMMIT}" ]]; then
+        echo "Skipping vLLM Omni build for ${TARGETARCH}..."
+        exit 0
+    fi
+
+    source /usr/local/Ascend/ascend-toolkit/set_env.sh && \
+    source /usr/local/Ascend/nnal/atb/set_env.sh
+
+    CMAKE_MAX_JOBS="${CMAKE_MAX_JOBS}"
+    if [[ -z "${CMAKE_MAX_JOBS}" ]]; then
+        CMAKE_MAX_JOBS="$(( $(nproc) / 2 ))"
+    fi
+    if (( $(echo "${CMAKE_MAX_JOBS} < 4" | bc -l) )); then
+        CMAKE_MAX_JOBS="4"
+    fi
+    export MAX_JOBS="${CMAKE_MAX_JOBS}"
+    export COMPILE_CUSTOM_KERNELS=1
+    export LD_LIBRARY_PATH="${LD_LIBRARY_PATH}:${CANN_HOME}/ascend-toolkit/latest/$(uname -i)-linux/devlib"
+    export VLLM_TARGET_DEVICE="empty"
+    echo "Building vLLM Omni with the following environment variables:"
+    env
+
+    # Build
+    git -C /tmp clone --recursive --shallow-submodules \
+        https://github.com/vllm-project/vllm-omni vllm_omni \
+        && pushd /tmp/vllm_omni \
+        && git checkout ${VLLM_OMNI_COMMIT} \
+        && git submodule update --init --recursive
+    pushd /tmp/vllm_omni \
+        && sed -i "/\"fa3-fwd.*\"/d" /tmp/vllm_omni/pyproject.toml \
+        && uv pip install pyyaml \
+        && python -v -m build --no-isolation --wheel \
+        && tree -hs /tmp/vllm_omni/dist \
+        && mv /tmp/vllm_omni/dist /workspace
+
+    # Cleanup
+    rm -rf /var/tmp/* \
+        && rm -rf /tmp/*
+EOF
+
+
+FROM vllm-build AS vllm
+SHELL ["/bin/bash", "-eo", "pipefail", "-c"]
+
+ARG TARGETPLATFORM
+ARG TARGETOS
+ARG TARGETARCH
+
+## Install Ray
+
+RUN <<EOF
+    # Ray
+
+    # Install Ray Client and Default
+    cat <<EOT >/tmp/requirements.txt
+ray[client]>=2.47.1,<=2.48.0
+ray[default]>=2.47.1,<=2.48.0
+EOT
+    uv pip install \
+        -r /tmp/requirements.txt
+
+    # Cleanup
+    rm -rf /var/tmp/* \
+        && rm -rf /tmp/*
+EOF
+
+## Install LMCache
+
+ARG VLLM_LMCACHE_VERSION
+ARG VLLM_LMCACHE_ASCEND_VERSION
+
+RUN <<EOF
+    # LMCache
+
+    if [[ "${CANN_ARCHS}" == "310p" ]]; then
+        echo "Skipping LMCache installation for ${CANN_ARCHS}..."
+        exit 0
+    fi
+
+    # LMCache-Ascend (kvcache-ops) does not support CANN >= 9.0 yet:
+    # its ascendc_with_def.cmake gates the new build path on `VERSION_EQUAL "8.5"`,
+    # so CANN 9.0 falls back to "8.2 mode" and passes an empty --run-mode to
+    # extract_host_stub.py, failing the kernel precompile. Skip until upstream adapts.
+    if (( "${CANN_VERSION%%.*}" >= 9 )); then
+        echo "Skipping LMCache installation for CANN ${CANN_VERSION} (>=9.0 not supported by kvcache-ops)..."
+        exit 0
+    fi
+
+    source /usr/local/Ascend/ascend-toolkit/set_env.sh && \
+    source /usr/local/Ascend/nnal/atb/set_env.sh
+
+    CMAKE_MAX_JOBS="${CMAKE_MAX_JOBS}"
+    if [[ -z "${CMAKE_MAX_JOBS}" ]]; then
+        CMAKE_MAX_JOBS="$(( $(nproc) / 2 ))"
+    fi
+    if (( $(echo "${CMAKE_MAX_JOBS} < 4" | bc -l) )); then
+        CMAKE_MAX_JOBS="4"
+    fi
+    export MAX_JOBS="${CMAKE_MAX_JOBS}"
+    export LD_LIBRARY_PATH="${LD_LIBRARY_PATH}:${CANN_HOME}/ascend-toolkit/latest/$(uname -i)-linux/devlib"
+    if [[ "${CANN_ARCHS}" == "a3" ]]; then
+        export SOC_VERSION="Ascend910_9382"
+    elif [[ "${CANN_ARCHS}" == "310p" ]]; then
+        export SOC_VERSION="Ascend310P3"
+    else
+        export SOC_VERSION="Ascend910B3"
+    fi
+    echo "Building LMCache with the following environment variables:"
+    env
+
+    # Install LMCache
+    NO_CUDA_EXT=1 pip install lmcache==${VLLM_LMCACHE_VERSION}
+
+    # Install LMCache Ascend
+    git -C /tmp clone --recursive --shallow-submodules \
+        --depth 1 --branch v${VLLM_LMCACHE_ASCEND_VERSION} --single-branch \
+        https://github.com/LMCache/LMCache-Ascend.git lmcache-ascend-${VLLM_LMCACHE_ASCEND_VERSION}
+    uv pip install --no-build-isolation \
+        /tmp/lmcache-ascend-${VLLM_LMCACHE_ASCEND_VERSION}
+
+    # Cleanup
+    rm -rf /var/tmp/* \
+        && rm -rf /tmp/*
+EOF
+
+## Install MoonCake
+
+RUN --mount=type=bind,from=vllm-build-mooncake,source=/,target=/mooncake,rw <<EOF
+    # MoonCake
+
+    if [[ ! -d /mooncake/workspace ]]; then
+        echo "Skipping MoonCake installation for ${CANN_ARCHS} ${TARGETARCH}..."
+        exit 0
+    fi
+
+    # Install
+    uv pip install --no-build-isolation \
+        /mooncake/workspace/*.whl
+
+    # Cleanup
+    rm -rf /var/tmp/* \
+        && rm -rf /tmp/*
+EOF
+
+## Install Omni
+
+RUN --mount=type=bind,from=vllm-build-omni,source=/,target=/omni,rw <<EOF
+    # Omni
+
+    if [[ ! -d /omni/workspace ]]; then
+        echo "Skipping vLLM Omni installation for ${TARGETARCH}..."
+        exit 0
+    fi
+
+    # Install
+    uv pip install --no-build-isolation \
+        /omni/workspace/*.whl
+
+    # Dependencies
+    cat <<EOT >/tmp/requirements.txt
+onnxruntime-cann
+sox
+EOT
+    uv pip install \
+        -r /tmp/requirements.txt
+
+    # Cleanup
+    rm -rf /var/tmp/* \
+        && rm -rf /tmp/*
+EOF
+
+## Postprocess
+
+RUN <<EOF
+    # Postprocess
+
+    # Hijack executable path
+    PYTHON_LIB_PREFIX=$(python3 -c "import sys; print(sys.base_prefix);")
+    mv ${PYTHON_LIB_PREFIX}/bin/vllm ${PYTHON_LIB_PREFIX}/bin/vllm_
+    cat <<EOT >${PYTHON_LIB_PREFIX}/bin/vllm
+#!/usr/bin/bash
+
+source \${CANN_HOME}/ascend-toolkit/set_env.sh
+source \${CANN_HOME}/nnal/atb/set_env.sh
+
+export LD_LIBRARY_PATH=${PYTHON_LIB_PREFIX}/lib:${PYTHON_LIB_PREFIX}/lib64:\${LD_LIBRARY_PATH}
+export LD_PRELOAD=/usr/lib/$(uname -m)-linux-gnu/libjemalloc.so.2:\${LD_PRELOAD}
+
+exec \${BASH_SOURCE[0]}_ "\$@"
+EOT
+    chmod a+x ${PYTHON_LIB_PREFIX}/bin/vllm
+
+    # Review
+    uv pip tree \
+        --package vllm \
+        --package vllm-ascend \
+        --package vllm-omni \
+        --package torch \
+        --package torch-npu \
+        --package lmcache \
+        --package lmcache-ascend \
+        --package triton-ascend \
+        --package ray
+EOF
+
+## Patch
+
+RUN --mount=type=bind,target=/workspace,rw <<EOF
+    # Patch
+
+    tree -hs /workspace/patches
+    pushd /vllm-workspace/vllm \
+        && patch -p1 < /workspace/patches/vllm/*.patch
+    pushd /vllm-workspace/vllm-ascend \
+        && patch -p1 < /workspace/patches/vllm_ascend/*.patch
+    if pip show vllm_omni > /dev/null 2>&1; then \
+        pushd $(pip show vllm_omni | grep Location: | cut -d" " -f 2) \
+            && patch -p1 < /workspace/patches/vllm_omni/*.patch; \
+    fi
+EOF
+
+## Dependencies
+
+RUN <<EOF
+    # Dependencies
+
+    # Install
+    cat <<EOT >/tmp/requirements.txt
+# audio extras
+librosa
+soundfile
+mistral_common[audio]
+
+# tokenizer extras
+fastokens==0.2.0
+EOT
+    uv pip install \
+        -r /tmp/requirements.txt
+
+    # Cleanup
+    rm -rf /var/tmp/* \
+        && rm -rf /tmp/*
+EOF
+
+## Entrypoint
+
+ENV RAY_EXPERIMENTAL_NOSET_ASCEND_RT_VISIBLE_DEVICES=1 \
+    TASK_QUEUE_ENABLE=1 \
+    OMP_NUM_THREADS=1 \
+    CPU_AFFINITY_CONF=1 \
+    PYTORCH_NPU_ALLOC_CONF="expandable_segments:True" \
+    SAFETENSORS_FAST_GPU=1 \
+    RUNAI_STREAMER_MEMORY_LIMIT=0 \
+    RUNAI_STREAMER_LOG_TO_STDERR=1 \
+    RUNAI_STREAMER_LOG_LEVEL=INFO
+
+WORKDIR /
+ENTRYPOINT [ "tini", "--" ]
