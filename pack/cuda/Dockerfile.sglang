@@ -329,6 +329,8 @@ librosa
 EOT
     uv pip install \
         -r /tmp/requirements.txt
+    uv pip install tilelang==0.1.12
+    uv pip install triton==3.7.1
 
     # Uninstall
     ## Remove Run:AI Model Streamer to avoid peak memory usage in model loading.

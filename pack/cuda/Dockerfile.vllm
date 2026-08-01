@@ -326,6 +326,8 @@ fastokens==0.2.0
 EOT
     uv pip install \
         -r /tmp/requirements.txt
+    uv pip install tilelang==0.1.12
+    uv pip install triton==3.7.1
 
     # Cleanup
     rm -rf /var/tmp/* \
